@@ -403,7 +403,7 @@ def transform_tool_result(*, tool_name: str, args: dict, result: str,
     if stats:
         stats["tools_saved"][tool_name] = stats["tools_saved"].get(tool_name, 0) + saved
 
-    _record_saving(session_id, tool_name, original_bytes, summary_bytes, str(fpath))
+    _record_saving(session_id, tool_name, original_bytes, saved, str(fpath))
     _fire_hook("posttooluse", {
         "session_id": session_id,
         "tool_name": tool_name,
