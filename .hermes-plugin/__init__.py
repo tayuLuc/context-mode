@@ -322,7 +322,7 @@ def pre_llm_call(*, session_id: str, user_message: str,
         SESSION_GUIDANCE_SHOWN.clear()
         SESSION_GUIDANCE_SHOWN[session_id] = True
 
-    return GUIDANCE
+    return {"context": GUIDANCE}
 
 
 # ── Plugin registration ────────────────────────────────────────────────
