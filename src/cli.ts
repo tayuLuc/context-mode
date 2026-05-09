@@ -102,6 +102,12 @@ const HOOK_MAP: Record<string, Record<string, string>> = {
     sessionstart: "hooks/sessionstart.mjs",
     userpromptsubmit: "hooks/userpromptsubmit.mjs",
   },
+  "hermes": {
+    pretooluse: "hooks/hermes/pretooluse.mjs",
+    posttooluse: "hooks/hermes/posttooluse.mjs",
+    precompact: "hooks/hermes/precompact.mjs",
+    sessionstart: "hooks/hermes/sessionstart.mjs",
+  },
 };
 
 async function hookDispatch(platform: string, event: string): Promise<void> {

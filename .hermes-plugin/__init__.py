@@ -1,12 +1,15 @@
 """
 Hermes Agent plugin for Context Mode integration.
 
-Five hooks:
-  pre_tool_call       - Block high-output terminal commands, redirect to ctx_execute
-  transform_tool_result - Sandbox large outputs to files, return compact summaries
-  pre_llm_call        - Inject routing rules on first turn of each session
-  on_session_start    - Initialize metrics tracking
-  on_session_end      - Persist session metrics to SQLite
+Four hooks:
+  pre_tool_call         - Block high-output terminal commands
+  transform_tool_result - Sandbox large outputs to files
+  pre_llm_call          - Inject guidance on first turn
+  on_session_start      - Track session lifecycle
+
+Analytics forwarded to context-mode SessionDB via:
+  context-mode hook hermes posttooluse  (stdin JSON)
+  context-mode hook hermes sessionstart (stdin JSON)
 
 Installs via: cp -r .hermes-plugin ~/.hermes/plugins/hermes-context-mode
 Then add to config.yaml: plugins.enabled: [hermes-context-mode]
@@ -18,19 +21,17 @@ import json
 import logging
 import os
 import re
-import sqlite3
-from collections import Counter
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("hermes-context-mode")
 
-# ── Constants ────────────────────────────────────────────────────────────
+# ── Constants ────────────────────────────────────────────
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 PLUGIN_DIR = HERMES_HOME / "plugins" / "hermes-context-mode"
-METRICS_DB = PLUGIN_DIR / "metrics.db"
 SANDBOX_DIR = PLUGIN_DIR / "sandbox"
 
 SANDBOX_THRESHOLD = 3 * 1024  # 3KB
@@ -54,89 +55,33 @@ BLOCKED_HIGH_OUTPUT = re.compile(
 )
 
 # Regex for inline HTTP in execute_code
-BLOCKED_INLINE_HTTP = re.compile(
-    r"\b(fetch\s*\(\s*['\"]http|"
-    r"requests\.(get|post|put|delete|patch)\s*\(|"
-    r"http\.(get|post|request)\s*\(|"
-    r"urllib\.request\.urlopen\s*\()"
+INLINE_HTTP = re.compile(
+    r"\b(fetch\s*\([\"']https?://|"
+    r"curl\s+|wget\s+|"
+    r"requests\.(get|post|put|delete)\s*\(|"
+    r"urllib\.request|"
+    r"httpx\.(get|post|put|delete)\s*\()"
 )
 
 # Tools that should NEVER be sandboxed
-NEVER_SANDBOX = {"write_file", "patch", "text_to_speech", "send_message", "vision_analyze"}
+NEVER_SANDBOX = {"ctx_execute", "ctx_execute_file", "ctx_batch_execute"}
 
-# Tools eligible for sandboxing
-SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
-                 "browser_vision", "web_extract", "web_search", "execute_code"}
+# ── Guidance block (injected once per session) ──────────
 
-# ── Guidance block (injected once per session) ──────────────────────────
+GUIDANCE = (
+    "Before running a command, evaluate if its output will exceed ~3 KB. "
+    "If yes, use ctx_execute(language=\"shell\", code=\"...\") instead of terminal. "
+    "For data analysis (filtering, counting, searching), use ctx_execute with Python/JavaScript. "
+    "fetch/curl/wget are blocked in shell — use ctx_execute or ctx_fetch_and_index instead."
+)
 
-ROUTING_BLOCK = """<context_window_protection>
-  Context Mode MCP tools available via ctx_execute.
-  - High-output terminal commands (curl/wget/build) BLOCKED. Use ctx_execute instead.
-  - Tool outputs >3KB are sandboxed to files. Use read_file to see full output.
-  - Think in Code: write scripts, don't read raw data into context.
-  - Keep responses concise. No filler, pleasantries, or hedging.
-  - /clear and /compact preserve your knowledge base.
-</context_window_protection>"""
+# ── Module-level state ──────────────────────────────────
 
-# ── Module-level state ─────────────────────────────────────────────────
-
-SESSION_GUIDANCE_SHOWN: dict[str, bool] = {}  # session_id -> guidance injected
-_session_stats: dict[str, dict] = {}           # session_id -> metrics
-
-_GUIDANCE_CAP = 1000  # max entries before eviction
+_session_guidance_injected: set[str] = set()
+_session_id: str = ""
 
 
-# ── SQLite metrics ─────────────────────────────────────────────────────
-
-def _ensure_db() -> sqlite3.Connection:
-    PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(METRICS_DB))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS session_metrics (
-            session_id TEXT PRIMARY KEY,
-            platform TEXT, model TEXT,
-            started TEXT, ended TEXT,
-            tool_calls INTEGER DEFAULT 0,
-            bytes_saved INTEGER DEFAULT 0,
-            tools_saved TEXT DEFAULT '{}',
-            blocks INTEGER DEFAULT 0
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS tool_savings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT, tool_name TEXT,
-            original_bytes INTEGER, saved_bytes INTEGER,
-            sandbox_path TEXT, ts TEXT
-        )
-    """)
-    conn.commit()
-    return conn
-
-
-def _record_saving(session_id: str, tool_name: str,
-                   original_bytes: int, saved_bytes: int, path: str = "") -> None:
-    try:
-        conn = _ensure_db()
-        conn.execute(
-            "INSERT INTO tool_savings VALUES (NULL, ?, ?, ?, ?, ?, ?)",
-            (session_id, tool_name, original_bytes, saved_bytes, path,
-             datetime.now().isoformat()),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.debug("Metrics save failed: %s", e)
-
-
-def _update_session(session_id: str, **kw) -> None:
-    stats = _session_stats.get(session_id)
-    if stats:
-        stats.update(kw)
-
-
-# ── Helpers ────────────────────────────────────────────────────────────
+# ── Helpers ────────────────────────────────────────────
 
 def _is_allowed(stripped: str) -> bool:
     return any(stripped.startswith(a) for a in ALLOWED_COMMANDS)
@@ -146,193 +91,206 @@ def _count_bytes(obj) -> int:
     """Recursively count bytes in a nested structure."""
     if isinstance(obj, str):
         return len(obj.encode("utf-8"))
+    if isinstance(obj, bytes):
+        return len(obj)
     if isinstance(obj, dict):
         return sum(_count_bytes(v) for v in obj.values())
     if isinstance(obj, (list, tuple)):
-        return sum(_count_bytes(item) for item in obj)
-    return len(str(obj).encode("utf-8"))
+        return sum(_count_bytes(i) for i in obj)
+    return 0
 
 
-# ── Hook: on_session_start ─────────────────────────────────────────────
+def _fire_hook(event: str, payload: dict) -> None:
+    """Fire a context-mode CLI hook with JSON payload on stdin.
+
+    This forwards events to context-mode's SessionDB for analytics
+    and ctx stats reporting. Errors are non-fatal.
+    """
+    try:
+        subprocess.run(
+            ["context-mode", "hook", "hermes", event],
+            input=json.dumps(payload),
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as e:
+        logger.debug("Hook %s failed: %s", event, e)
+
+
+# ── Hook: on_session_start ─────────────────────────────
 
 def on_session_start(session_id: str, model: str, platform: str, **kwargs) -> None:
-    _session_stats[session_id] = {
-        "tool_calls": 0, "bytes_saved": 0, "blocks": 0,
-        "tools_saved": Counter(),
-        "model": model, "platform": platform,
-        "started": datetime.now().isoformat(),
-    }
-    # Clean up guidance tracker for recycled session IDs
-    SESSION_GUIDANCE_SHOWN.pop(session_id, None)
-    # Enforce cap to prevent unbounded growth
-    if len(SESSION_GUIDANCE_SHOWN) > _GUIDANCE_CAP:
-        SESSION_GUIDANCE_SHOWN.clear()
-    logger.info("Session %s started: %s/%s", session_id[:8], platform, model)
+    global _session_id
+    _session_id = session_id
+
+    # Evict stale guidance trackers to prevent unbounded growth
+    if len(_session_guidance_injected) > 1000:
+        _session_guidance_injected.clear()
+
+    # Forward to SessionDB via CLI hook
+    _fire_hook("sessionstart", {
+        "sessionId": session_id,
+        "model": model,
+        "platform": platform,
+        "ts": datetime.now().isoformat(),
+    })
 
 
-# ── Hook: on_session_end ───────────────────────────────────────────────
-
-def on_session_end(session_id: str, completed: bool, interrupted: bool, **kwargs) -> None:
-    stats = _session_stats.pop(session_id, None)
-    if not stats:
-        return
-
-    try:
-        conn = _ensure_db()
-        conn.execute(
-            "INSERT OR REPLACE INTO session_metrics VALUES (?,?,?,?,?,?,?,?,?)",
-            (
-                session_id, stats["platform"], stats["model"],
-                stats["started"], datetime.now().isoformat(),
-                stats["tool_calls"], stats["bytes_saved"],
-                json.dumps(dict(stats["tools_saved"])), stats["blocks"],
-            ),
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logger.debug("Session metrics save failed: %s", e)
-
-    status = "completed" if completed else ("interrupted" if interrupted else "failed")
-    saved_kb = stats["bytes_saved"] / 1024
-    if saved_kb > 0 or stats["blocks"] > 0:
-        logger.info(
-            "Session %s %s: saved %.1fKB, %d blocks across %d tool calls",
-            session_id[:8], status, saved_kb, stats["blocks"], stats["tool_calls"],
-        )
-
-
-# ── Hook: pre_tool_call (PROACTIVE — block before execution) ───────────
+# ── Hook: pre_tool_call (PROACTIVE — block before execution) ───
 
 def pre_tool_call(*, tool_name: str, args: dict, task_id: str,
-                  session_id: str = "", **_kwargs) -> Optional[dict]:
-    """Block high-output terminal commands; redirect to ctx_execute (MCP)."""
-    if tool_name != "terminal":
+                  session_id: str, **kwargs) -> Optional[dict]:
+    """Block high-output terminal commands; log event for analytics."""
+    global _session_id
+    _session_id = session_id
+
+    # Only intercept Bash tool
+    if tool_name not in ("Bash", "execute_code"):
         return None
 
-    command = args.get("command", "")
-    if not isinstance(command, str) or not command.strip():
+    command = (args.get("command") or args.get("code") or "").strip()
+    if not command:
         return None
 
-    stripped = command.strip()
+    stripped = command.strip().lower()
 
     # Allowlist
     if _is_allowed(stripped):
         return None
 
-    # Track call count
-    _update_session(session_id, tool_calls=_session_stats.get(session_id, {}).get("tool_calls", 0) + 1)
-
     # Block: known high-output commands
-    if BLOCKED_HIGH_OUTPUT.search(stripped):
-        _update_session(session_id, blocks=_session_stats.get(session_id, {}).get("blocks", 0) + 1)
+    if tool_name == "Bash" and BLOCKED_HIGH_OUTPUT.search(stripped):
+        saved = _count_bytes(args)
+        # Forward blocked event to SessionDB
+        _fire_hook("posttooluse", {
+            "sessionId": session_id,
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "blocked": True,
+            "saved_bytes": saved,
+            "original_tool": "Bash",
+            "sandbox_path": "",
+            "error": "Command blocked — high-output, use ctx_execute instead",
+        })
         return {
-            "action": "block",
+            "action": "deny",
             "message": (
-                "context-mode: High-output command blocked. "
-                "Use ctx_execute (context-mode MCP tool) to run it in the sandbox."
+                "Shell command blocked by context-mode policy.\n"
+                "Use ctx_execute(language=\"shell\", code=\"...\") instead.\n"
+                "Reason: blocked command detected."
             ),
         }
 
     # Block: inline HTTP in execute_code
-    if tool_name == "terminal" and BLOCKED_INLINE_HTTP.search(stripped):
-        captures = BLOCKED_INLINE_HTTP.search(stripped)
-        url_match = re.search(r"https?://[^\s\"'()]+", stripped)
-        url = url_match.group(0) if url_match else ""
+    if tool_name == "execute_code" and INLINE_HTTP.search(command):
+        saved = _count_bytes(args)
+        _fire_hook("posttooluse", {
+            "sessionId": session_id,
+            "tool_name": "execute_code",
+            "tool_input": {"code": command},
+            "blocked": True,
+            "saved_bytes": saved,
+            "original_tool": "execute_code",
+            "error": "Inline HTTP blocked — use ctx_fetch_and_index or ctx_execute with fetch inside",
+        })
         return {
-            "action": "block",
+            "action": "deny",
             "message": (
-                f"context-mode: Inline HTTP blocked. Use ctx_fetch_and_index "
-                f"to fetch and index \"{url}\" via context-mode MCP."
+                "Inline HTTP fetching is blocked by context-mode policy.\n"
+                "Use ctx_fetch_and_index(url) or ctx_execute(language=\"javascript\", code=\"…\") "
+                "with fetch() inside instead."
             ),
         }
 
     return None
 
 
-# ── Hook: transform_tool_result (REACTIVE — sandbox large outputs) ─────
+# ── Hook: transform_tool_result (REACTIVE — sandbox large outputs) ──
 
 def transform_tool_result(*, tool_name: str, args: dict, result: str,
-                          session_id: str = "", task_id: str = "",
-                          **_kwargs) -> Optional[str]:
-    """Sandbox large outputs; return compact summary."""
+                          session_id: str, **kwargs) -> Optional[str]:
+    """Sandbox large outputs; forward event to SessionDB."""
+    global _session_id
+    _session_id = session_id
+
+    # Never sandbox context-mode MCP tools
     if tool_name in NEVER_SANDBOX:
         return None
-    if tool_name not in SANDBOX_TOOLS:
-        return None
-    if not isinstance(result, str) or len(result) <= SANDBOX_THRESHOLD:
+
+    # Only sandbox Bash/terminal with sufficient output
+    if tool_name not in ("Bash", "Read", "execute_code"):
         return None
 
-    # Unwrap JSON
-    raw_content = result
+    # Try to unwrap JSON result
+    raw_output = result
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict):
-            content_field = next(
-                (v for k, v in parsed.items()
-                 if k in ("content", "output", "result") and isinstance(v, str)),
-                None,
-            )
-            if content_field:
-                raw_content = content_field
-    except json.JSONDecodeError:
+            raw_output = json.dumps(parsed.get("content", parsed), ensure_ascii=False)
+    except (json.JSONDecodeError, TypeError):
         pass
+
+    if isinstance(raw_output, str):
+        output_len = len(raw_output.encode("utf-8"))
+    else:
+        output_len = _count_bytes(raw_output)
+
+    if output_len < SANDBOX_THRESHOLD:
+        return None
 
     # Ensure sandbox directory exists
     SANDBOX_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Write to sandbox
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_name = tool_name.replace("/", "_")
-    fname = f"{ts}_{safe_name}_{task_id[:8] if task_id else 'na'}.txt"
-    fpath = SANDBOX_DIR / fname
-    fpath.write_text(raw_content, encoding="utf-8")
+    count = len(list(SANDBOX_DIR.iterdir())) + 1
+    sandbox_path = str(SANDBOX_DIR / f"output-{count}.txt")
 
-    saved = _count_bytes(raw_content)
-    _update_session(session_id, bytes_saved=_session_stats.get(session_id, {}).get("bytes_saved", 0) + saved)
-    stats = _session_stats.get(session_id)
-    if stats:
-        stats["tools_saved"][tool_name] = stats["tools_saved"].get(tool_name, 0) + saved
+    # Write to sandbox file
+    with open(sandbox_path, "w") as f:
+        f.write(raw_output if isinstance(raw_output, str) else str(raw_output))
 
-    _record_saving(session_id, tool_name, len(raw_content), saved, str(fpath))
+    # Forward to SessionDB
+    _fire_hook("posttooluse", {
+        "sessionId": session_id,
+        "tool_name": tool_name,
+        "tool_input": args,
+        "result": raw_output[:500] if isinstance(raw_output, str) else str(raw_output)[:500],
+        "saved_bytes": output_len,
+        "sandbox_path": sandbox_path,
+        "truncated": True,
+    })
 
     # Compact summary
-    line_count = raw_content.count("\n") + 1
-    preview = raw_content[:200].strip()
-    summary = f"""<sandboxed_output tool="{tool_name}" file="{fpath}" lines="{line_count}" saved="{saved}B">
-  Output >3KB — written to sandbox file.
-  Use `read_file(path="{fpath}")` to view full output.
-  Preview: {preview}
-</sandboxed_output>"""
-    return summary
+    return (
+        f"{'─' * 40}\n"
+        f"Output sandboxed ({output_len} bytes → {sandbox_path})\n"
+        f"Output was ~{output_len / 1024:.0f} KB; file saved to sandbox.\n"
+        f"{'─' * 40}\n"
+    )
 
 
-# ── Hook: pre_llm_call (inject instructions once per session) ──────────
+# ── Hook: pre_llm_call (inject instructions once per session) ──
 
 def pre_llm_call(*, session_id: str, user_message: str,
-                 is_first_turn: bool, **kwargs) -> Optional[dict]:
+                 **kwargs) -> Optional[str]:
     """Inject context optimization instructions on first turn."""
-    if not is_first_turn:
-        return None
-    if session_id in SESSION_GUIDANCE_SHOWN:
+    if session_id in _session_guidance_injected:
         return None
 
-    SESSION_GUIDANCE_SHOWN[session_id] = True
+    _session_guidance_injected.add(session_id)
 
-    # Enforce cap (belt-and-suspenders with on_session_start)
-    if len(SESSION_GUIDANCE_SHOWN) > _GUIDANCE_CAP:
-        SESSION_GUIDANCE_SHOWN.clear()
-        SESSION_GUIDANCE_SHOWN[session_id] = True
+    # Enforce cap
+    if len(_session_guidance_injected) > 1000:
+        _session_guidance_injected.clear()
+        _session_guidance_injected.add(session_id)
 
-    return {"context": ROUTING_BLOCK}
+    return GUIDANCE
 
 
-# ── Plugin registration ────────────────────────────────────────────────
+# ── Plugin registration ────────────────────────────────
 
 def register(ctx) -> None:
     ctx.register_hook("pre_tool_call", pre_tool_call)
     ctx.register_hook("transform_tool_result", transform_tool_result)
     ctx.register_hook("pre_llm_call", pre_llm_call)
     ctx.register_hook("on_session_start", on_session_start)
-    ctx.register_hook("on_session_end", on_session_end)
-    logger.info("hermes-context-mode registered (5 hooks)")

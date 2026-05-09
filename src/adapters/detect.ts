@@ -67,6 +67,7 @@ export const PLATFORM_ENV_VARS = [
   // qwen-code — QWEN_PROJECT_DIR per QwenLM/qwen-code docs/users/features/hooks.md.
   // (QWEN_SESSION_ID removed — 0 hits in qwen-code repository.)
   ["qwen-code",          ["QWEN_PROJECT_DIR"]],
+  ["hermes",            ["HERMES_HOME"]],
   // omp (Pi-compatible harness — can1357/oh-my-pi). OMP_PROCESSING_AGENT_DIR
   // is the published config root override (defaults to ~/.omp/agent). Listed
   // BEFORE pi so OMP is not misclassified as Pi when both are installed.
@@ -106,6 +107,7 @@ export function getSessionDirSegments(platform: string): string[] | null {
     case "opencode":         return [".config", "opencode"];
     case "zed":              return [".config", "zed"];
     case "jetbrains-copilot": return [".config", "JetBrains"];
+    case "hermes":            return [".hermes"];
     default:                 return null;
   }
 }
@@ -142,7 +144,7 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
   if (platformOverride) {
     const validPlatforms: PlatformId[] = [
       "claude-code", "gemini-cli", "kilo", "opencode", "codex",
-      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code",
+      "vscode-copilot", "jetbrains-copilot", "cursor", "antigravity", "kiro", "pi", "omp", "zed", "qwen-code", "hermes",
     ];
     if (validPlatforms.includes(platformOverride as PlatformId)) {
       return {

@@ -169,6 +169,14 @@ export const JETBRAINS_OPTS = {
   sessionIdEnv: undefined,
 };
 
+/** Hermes Agent platform options. */
+export const HERMES_OPTS = {
+  configDir: ".hermes",
+  configDirEnv: "HERMES_HOME",
+  projectDirEnv: undefined,
+  sessionIdEnv: "HERMES_SESSION_ID",
+};
+
 /**
  * Resolve the platform config directory, respecting env var overrides.
  * Platforms like Claude Code (CLAUDE_CONFIG_DIR), Gemini CLI (GEMINI_CLI_HOME),
@@ -255,12 +263,24 @@ export function getSessionId(input, opts = CLAUDE_OPTS) {
  * Creates the directory if it doesn't exist.
  * Path: ~/<configDir>/context-mode/sessions/<SHA256(projectDir)[:16]>.db
  */
-export function getSessionDBPath(opts = CLAUDE_OPTS, projectDirOverride) {
+export function getSessionDBPath(opts = autoDetectOpts(), projectDirOverride) {
   const projectDir = normalizeWorktreePath(projectDirOverride ?? getProjectDir(opts));
   const hash = createHash("sha256").update(projectDir).digest("hex").slice(0, 16);
   const dir = join(resolveConfigDir(opts), "context-mode", "sessions");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${hash}${getWorktreeSuffix(projectDir)}.db`);
+}
+
+/**
+ * Auto-detect platform options based on environment variables.
+ * Allows the MCP server and CLI hooks to agree on the same SessionDB path
+ * without explicit platform configuration.
+ */
+function autoDetectOpts() {
+  if (process.env.HERMES_HOME || process.env.HERMES_SESSION_ID) {
+    return HERMES_OPTS;
+  }
+  return CLAUDE_OPTS;
 }
 
 /**
