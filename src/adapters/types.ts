@@ -349,6 +349,7 @@ export type PlatformId =
   | "omp"
   | "zed"
   | "qwen-code"
+  | "hermes"
   | "unknown";
 
 /** Detection signal used to identify which platform is running. */

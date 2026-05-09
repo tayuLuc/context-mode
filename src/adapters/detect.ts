@@ -71,6 +71,9 @@ export const PLATFORM_ENV_VARS = [
   // is the published config root override (defaults to ~/.omp/agent). Listed
   // BEFORE pi so OMP is not misclassified as Pi when both are installed.
   ["omp",                ["OMP_PROCESSING_AGENT_DIR"]],
+  // hermes — nousresearch/hermes-agent. HERMES_HOME is set by Hermes
+  // gateway on startup (defaults to ~/.hermes/ when unset).
+  ["hermes",             ["HERMES_HOME"]],
   // pi — PI_PROJECT_DIR consumed by src/adapters/pi/extension.ts:154 + src/server.ts:153
   // — implies the Pi runtime sets it before invoking the extension.
   ["pi",                 ["PI_PROJECT_DIR"]],
@@ -274,6 +277,14 @@ export function detectPlatform(clientInfo?: { name: string; version?: string }):
     };
   }
 
+  if (existsSync(resolve(home, ".hermes"))) {
+    return {
+      platform: "hermes",
+      confidence: "medium",
+      reason: "~/.hermes/ directory exists",
+    };
+  }
+
   // ── Low confidence: fallback ───────────────────────────
 
   return {
@@ -355,6 +366,11 @@ export async function getAdapter(platform?: PlatformId): Promise<HookAdapter> {
     case "omp": {
       const { OMPAdapter } = await import("./omp/index.js");
       return new OMPAdapter();
+    }
+
+    case "hermes": {
+      const { HermesAdapter } = await import("./hermes/index.js");
+      return new HermesAdapter();
     }
 
     default: {
