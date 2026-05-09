@@ -435,6 +435,109 @@ def pre_llm_call(*, session_id: str, user_message: str,
     return {"context": GUIDANCE}
 
 
+# ── Slash command handlers ──────────────────────────────────────────────
+
+
+async def _cmd_ctx_stats(raw_args: str) -> str:
+    """Handler for /ctx-stats — read metrics from DB and format."""
+    try:
+        conn = sqlite3.connect(str(METRICS_DB))
+        cur = conn.cursor()
+        total = cur.execute("SELECT COUNT(*) FROM session_metrics").fetchone()[0]
+        latest = cur.execute(
+            "SELECT session_id, tool_calls, bytes_saved, blocks "
+            "FROM session_metrics ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        by_tool = cur.execute(
+            "SELECT tool_name, COUNT(*), SUM(original_bytes), SUM(saved_bytes) "
+            "FROM tool_savings GROUP BY tool_name ORDER BY COUNT(*) DESC"
+        ).fetchall()
+        active = len(_session_stats)
+        conn.close()
+    except Exception as e:
+        return f"⚠️ Stats error: {e}"
+
+    lines = [
+        "context-mode stats",
+        f"  Sessions tracked: {total} ({active} active)",
+    ]
+    if latest:
+        lines.append(
+            f"  Latest session: {latest[0][:8]} calls={latest[1]} "
+            f"saved={latest[2]/1024:.1f}KB blocks={latest[3]}"
+        )
+    for t in by_tool:
+        lines.append(
+            f"  {t[0]}: {t[1]} calls, "
+            f"{t[2]/1024:.0f}KB orig → {t[3]/1024:.0f}KB saved"
+        )
+    return "\n".join(lines)
+
+
+async def _cmd_ctx_doctor(raw_args: str) -> str:
+    """Handler for /ctx-doctor — run diagnostics."""
+    import shutil as _su
+
+    checks = []
+    checks.append(f"{'✓' if PLUGIN_DIR.exists() else '✗'} Plugin dir: {PLUGIN_DIR}")
+
+    db_ok = METRICS_DB.exists()
+    checks.append(f"{'✓' if db_ok else '✗'} Metrics DB: {METRICS_DB.name}")
+
+    if SANDBOX_DIR.exists():
+        n_files = len(list(SANDBOX_DIR.iterdir()))
+        checks.append(f"{'✓'} Sandbox: {n_files} files")
+    else:
+        checks.append("✗ Sandbox dir: missing")
+
+    mcp_bin = _su.which("context-mode")
+    checks.append(f"{'✓' if mcp_bin else '✗'} MCP server binary found"
+                  + (f" at {mcp_bin}" if mcp_bin else ""))
+
+    if db_ok:
+        try:
+            conn = sqlite3.connect(str(METRICS_DB))
+            cur = conn.cursor()
+            n_sessions = cur.execute("SELECT COUNT(*) FROM session_metrics").fetchone()[0]
+            n_savings = cur.execute("SELECT COUNT(*) FROM tool_savings").fetchone()[0]
+            conn.close()
+            checks.append(f"\u2713 DB: {n_sessions} sessions, {n_savings} savings records")
+        except Exception as e:
+            checks.append(f"\u2717 DB error: {e}")
+
+    return "\n".join(checks)
+
+
+async def _cmd_ctx_purge(raw_args: str) -> str:
+    """Handler for /ctx-purge — clear all plugin data."""
+    confirm = raw_args.strip().lower()
+    if confirm != "yes":
+        return (
+            "⚠️ This will DELETE all metrics, sandbox files, and events.\n"
+            "Run `/ctx-purge yes` to confirm."
+        )
+
+    import shutil
+    deleted = []
+
+    if SANDBOX_DIR.exists():
+        shutil.rmtree(SANDBOX_DIR)
+        deleted.append(f"sandbox/ ({SANDBOX_DIR})")
+
+    if METRICS_DB.exists():
+        METRICS_DB.unlink()
+        deleted.append("metrics.db")
+
+    if EVENTS_LOG.exists():
+        EVENTS_LOG.unlink()
+        deleted.append("events.jsonl")
+
+    _session_stats.clear()
+    SESSION_GUIDANCE_SHOWN.clear()
+
+    return f"Purged: {', '.join(deleted) if deleted else 'nothing to clean'}."
+
+
 # ── Plugin registration ────────────────────────────────────────────────
 
 def register(ctx) -> None:
@@ -443,4 +546,7 @@ def register(ctx) -> None:
     ctx.register_hook("pre_llm_call", pre_llm_call)
     ctx.register_hook("on_session_start", on_session_start)
     ctx.register_hook("on_session_end", on_session_end)
-    logger.info("hermes-context-mode registered (5 hooks)")
+    ctx.register_command("ctx_stats", _cmd_ctx_stats)
+    ctx.register_command("ctx_doctor", _cmd_ctx_doctor)
+    ctx.register_command("ctx_purge", _cmd_ctx_purge)
+    logger.info("hermes-context-mode registered (5 hooks, 3 commands)")
