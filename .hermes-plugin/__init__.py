@@ -69,15 +69,83 @@ NEVER_SANDBOX = {"write_file", "patch", "text_to_speech", "send_message", "visio
 SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
                  "browser_vision", "web_extract", "web_search", "execute_code"}
 
-# ── Guidance block (injected once per session) ──────────────────────────
+# ── Guidance block (injected once per session — single source: upstream routing-block.mjs) ──
 
+# Synchronised from: https://github.com/mksglu/context-mode/blob/next/hooks/routing-block.mjs
 GUIDANCE = dedent("""\
-    Context Mode MCP tools available via ctx_execute.
-    - High-output terminal commands (curl/wget/build) BLOCKED. Use ctx_execute instead.
-    - Tool outputs >3KB are sandboxed to files. Use read_file to see full output.
-    - Think in Code: write scripts, don't read raw data into context.
-    - Keep responses concise. No filler, pleasantries, or hedging.
-    - /clear and /compact preserve your knowledge base.
+    <context_window_protection>
+      <priority_instructions>
+        Raw tool output floods context window. MUST use context-mode MCP tools. Keep raw data in sandbox.
+      </priority_instructions>
+
+      <tool_selection_hierarchy>
+        0. MEMORY: ctx_search(sort: "timeline")
+           - After resume, check prior context before asking user.
+        1. GATHER: ctx_batch_execute(commands, queries)
+           - Primary research tool. Runs commands, auto-indexes, searches. ONE call replaces many steps.
+           - Each command: {label: "section header", command: "shell command"}
+           - label becomes FTS5 chunk title — descriptive labels improve search.
+        2. FOLLOW-UP: ctx_search(queries: ["q1", "q2", ...])
+           - All follow-up questions. ONE call, many queries (default relevance mode).
+        3. PROCESSING: ctx_execute(language, code) | ctx_execute_file(path, language, code)
+           - API calls, log analysis, data processing.
+      </tool_selection_hierarchy>
+
+      <forbidden_actions>
+        - NO Bash for commands producing >20 lines output.
+        - NO Read for analysis — use ctx_execute_file. Read IS correct for files you intend to Edit.
+        - NO WebFetch — use ctx_fetch_and_index.
+        - Bash ONLY for git/mkdir/rm/mv/navigation.
+        - NO ctx_execute or ctx_execute_file for file creation/modification.
+          ctx_execute is for analysis, processing, computation only.
+      </forbidden_actions>
+
+      <file_writing_policy>
+        ALWAYS use native Write/Edit tools for file creation/modification.
+        NEVER use ctx_execute, ctx_execute_file, or Bash to write files.
+        Applies to all file types: code, configs, plans, specs, YAML, JSON, markdown.
+      </file_writing_policy>
+
+      <output_constraints>
+        <communication_style>
+          Terse like caveman. Technical substance exact. Only fluff die.
+          Use fragments when clear. Short synonyms (fix not "implement a solution for").
+          Technical terms exact. Code blocks unchanged.
+          Auto-expand for: security warnings, irreversible actions, user confusion.
+        </communication_style>
+        <artifact_policy>
+          Write artifacts (code, configs, PRDs) to FILES. NEVER inline.
+          Return only: file path + 1-line description.
+        </artifact_policy>
+        <response_format>
+          Concise summary:
+          - Actions taken (2-3 bullets)
+          - File paths created/modified
+          - Key findings
+        </response_format>
+      </output_constraints>
+
+      <session_continuity>
+        Skills, roles, and decisions set during this session remain active until the user revokes them.
+        Do not drop behavioral directives as context grows.
+      </session_continuity>
+
+      <ctx_commands>
+        "ctx stats" | "ctx-stats" | "/ctx-stats" | context savings question
+        → Call stats MCP tool, display full output verbatim.
+
+        "ctx doctor" | "ctx-doctor" | "/ctx-doctor" | diagnose context-mode
+        → Call doctor MCP tool, run returned shell command, display as checklist.
+
+        "ctx upgrade" | "ctx-upgrade" | "/ctx-upgrade" | update context-mode
+        → Call upgrade MCP tool, run returned shell command, display as checklist.
+
+        "ctx purge" | "ctx-purge" | "/ctx-purge" | wipe/reset knowledge base
+        → Call purge MCP tool with confirm: true. Warn: irreversible.
+
+        After /clear or /compact: knowledge base preserved. Tell user: "context-mode knowledge base preserved. Use `ctx purge` to start fresh."
+      </ctx_commands>
+    </context_window_protection>
 """)
 
 # ── Module-level state ─────────────────────────────────────────────────
