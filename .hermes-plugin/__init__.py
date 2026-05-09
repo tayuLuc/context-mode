@@ -139,6 +139,20 @@ def _update_session(session_id: str, **kw) -> None:
 
 # ── Helpers ────────────────────────────────────────────────────────────
 
+def _fire_hook(event: str, payload: dict) -> None:
+    """Forward event to context-mode SessionDB via CLI hook."""
+    try:
+        proc = subprocess.run(
+            ["context-mode", "hook", "hermes", event],
+            input=json.dumps(payload),
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            logger.debug("_fire_hook %s stderr: %s", event, proc.stderr[:200])
+    except Exception as e:
+        logger.debug("_fire_hook %s error: %s", event, e)
+
+
 def _is_allowed(stripped: str) -> bool:
     return any(stripped.startswith(a) for a in ALLOWED_COMMANDS)
 
@@ -169,6 +183,11 @@ def on_session_start(session_id: str, model: str, platform: str, **kwargs) -> No
     if len(SESSION_GUIDANCE_SHOWN) > _GUIDANCE_CAP:
         SESSION_GUIDANCE_SHOWN.clear()
     logger.info("Session %s started: %s/%s", session_id[:8], platform, model)
+    _fire_hook("sessionstart", {
+        "session_id": session_id,
+        "platform": platform,
+        "model": model,
+    })
 
 
 # ── Hook: on_session_end ───────────────────────────────────────────────
@@ -201,6 +220,13 @@ def on_session_end(session_id: str, completed: bool, interrupted: bool, **kwargs
             "Session %s %s: saved %.1fKB, %d blocks across %d tool calls",
             session_id[:8], status, saved_kb, stats["blocks"], stats["tool_calls"],
         )
+    _fire_hook("sessionend", {
+        "session_id": session_id,
+        "status": status,
+        "tool_calls": stats["tool_calls"],
+        "bytes_saved": stats["bytes_saved"],
+        "blocks": stats["blocks"],
+    })
 
 
 # ── Hook: pre_tool_call (PROACTIVE — block before execution) ───────────
@@ -296,6 +322,14 @@ def transform_tool_result(*, tool_name: str, args: dict, result: str,
         stats["tools_saved"][tool_name] = stats["tools_saved"].get(tool_name, 0) + saved
 
     _record_saving(session_id, tool_name, len(raw_content), saved, str(fpath))
+    _fire_hook("posttooluse", {
+        "session_id": session_id,
+        "tool_name": tool_name,
+        "blocked": False,
+        "saved_bytes": saved,
+        "sandbox_path": str(fpath),
+        "sandboxed": True,
+    })
 
     # Compact summary
     line_count = raw_content.count("\n") + 1
