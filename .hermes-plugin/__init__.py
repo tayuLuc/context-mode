@@ -358,6 +358,9 @@ def transform_tool_result(*, tool_name: str, args: dict, result: str,
     if not isinstance(result, str) or len(result) <= SANDBOX_THRESHOLD:
         return None
 
+    # Track this tool call
+    _update_session(session_id, tool_calls=_session_stats.get(session_id, {}).get("tool_calls", 0) + 1)
+
     # Unwrap JSON
     raw_content = result
     try:
@@ -383,13 +386,27 @@ def transform_tool_result(*, tool_name: str, args: dict, result: str,
     fpath = SANDBOX_DIR / fname
     fpath.write_text(raw_content, encoding="utf-8")
 
-    saved = _count_bytes(raw_content)
+    # Original bytes: what would have been in context
+    original_bytes = _count_bytes(raw_content)
+
+    # Compact summary
+    line_count = raw_content.count("\n") + 1
+    preview = raw_content[:200].strip()
+    summary = f"""<sandboxed_output tool="{tool_name}" file="{fpath}" lines="{line_count}" saved="{original_bytes}B">
+  Output >3KB — written to sandbox file.
+  Use `read_file(path="{fpath}")` to view full output.
+  Preview: {preview}
+</sandboxed_output>"""
+    # Saved bytes: how many bytes DIDN'T go into context
+    summary_bytes = _count_bytes(summary)
+    saved = original_bytes - summary_bytes
+
     _update_session(session_id, bytes_saved=_session_stats.get(session_id, {}).get("bytes_saved", 0) + saved)
     stats = _session_stats.get(session_id)
     if stats:
         stats["tools_saved"][tool_name] = stats["tools_saved"].get(tool_name, 0) + saved
 
-    _record_saving(session_id, tool_name, len(raw_content), saved, str(fpath))
+    _record_saving(session_id, tool_name, original_bytes, summary_bytes, str(fpath))
     _fire_hook("posttooluse", {
         "session_id": session_id,
         "tool_name": tool_name,
@@ -399,18 +416,9 @@ def transform_tool_result(*, tool_name: str, args: dict, result: str,
         "sandboxed": True,
     })
 
-    # Compact summary
-    line_count = raw_content.count("\n") + 1
-    preview = raw_content[:200].strip()
-    summary = f"""<sandboxed_output tool="{tool_name}" file="{fpath}" lines="{line_count}" saved="{saved}B">
-  Output >3KB — written to sandbox file.
-  Use `read_file(path="{fpath}")` to view full output.
-  Preview: {preview}
-</sandboxed_output>"""
     return summary
 
 
-# ── Hook: pre_llm_call (inject instructions once per session) ──────────
 
 def pre_llm_call(*, session_id: str, user_message: str,
                  is_first_turn: bool, **kwargs) -> Optional[dict]:
