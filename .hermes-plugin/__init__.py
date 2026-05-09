@@ -22,6 +22,7 @@ import sqlite3
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+from textwrap import dedent
 from typing import Optional
 
 logger = logging.getLogger("hermes-context-mode")
@@ -70,14 +71,14 @@ SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
 
 # ── Guidance block (injected once per session) ──────────────────────────
 
-GUIDANCE = (
-    "Context Mode MCP tools available via ctx_execute.\n"
-    "- High-output terminal commands (curl/wget/build) BLOCKED. Use ctx_execute instead.\n"
-    "- Tool outputs >3KB are sandboxed to files. Use read_file to see full output.\n"
-    "- Think in Code: write scripts, don't read raw data into context.\n"
-    "- Keep responses concise. No filler, pleasantries, or hedging.\n"
-    "- /clear and /compact preserve your knowledge base."
-)
+GUIDANCE = dedent("""\
+    Context Mode MCP tools available via ctx_execute.
+    - High-output terminal commands (curl/wget/build) BLOCKED. Use ctx_execute instead.
+    - Tool outputs >3KB are sandboxed to files. Use read_file to see full output.
+    - Think in Code: write scripts, don't read raw data into context.
+    - Keep responses concise. No filler, pleasantries, or hedging.
+    - /clear and /compact preserve your knowledge base.
+""")
 
 # ── Module-level state ─────────────────────────────────────────────────
 
