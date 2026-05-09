@@ -71,7 +71,7 @@ SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
 
 # ── Guidance block (injected once per session — single source: upstream routing-block.mjs) ──
 
-# Synchronised from: https://github.com/mksglu/context-mode/blob/next/hooks/routing-block.mjs
+# Synchronised from: hooks/routing-block.mjs (upstream)
 GUIDANCE = dedent("""\
     <context_window_protection>
       <priority_instructions>
