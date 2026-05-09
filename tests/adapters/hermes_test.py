@@ -7,7 +7,6 @@ Usage: pytest tests/adapters/hermes_test.py -v
 
 import os
 import tempfile
-import sqlite3
 
 import pytest
 
@@ -204,7 +203,7 @@ def test_on_session_start_clears_guidance(mod):
 
 
 def test_on_session_end_persists_metrics(mod):
-    """on_session_end writes session metrics to SQLite."""
+    """on_session_end tracks session metrics in-memory."""
     sid = "metrics-test-session"
     mod.on_session_start(session_id=sid, model="test-model", platform="test-platform")
 
@@ -217,19 +216,15 @@ def test_on_session_end_persists_metrics(mod):
         task_id="metrics-task",
     )
 
+    # Check in-memory stats before session end
+    assert sid in mod._session_stats, "Session should be tracked"
+    stats = mod._session_stats[sid]
+    assert stats["model"] == "test-model"
+    assert stats["platform"] == "test-platform"
+    assert stats["tool_calls"] > 0, f"Expected tool_calls > 0, got {stats['tool_calls']}"
+    assert stats["bytes_saved"] > 0, f"Expected bytes_saved > 0, got {stats['bytes_saved']}"
+
     mod.on_session_end(session_id=sid, completed=True, interrupted=False)
 
-    conn = sqlite3.connect(str(mod.METRICS_DB))
-    try:
-        row = conn.execute(
-            "SELECT session_id, platform, model, tool_calls, bytes_saved, blocks "
-            "FROM session_metrics WHERE session_id = ?",
-            (sid,),
-        ).fetchone()
-        assert row is not None, f"Expected metrics row for {sid}"
-        _, platform, model, tool_calls, bytes_saved, blocks = row
-        assert platform == "test-platform"
-        assert model == "test-model"
-        assert bytes_saved > 0, f"Expected bytes_saved > 0, got {bytes_saved}"
-    finally:
-        conn.close()
+    # Verify session data is popped (not persisted to SQLite)
+    assert sid not in mod._session_stats, "Session should be removed after end"

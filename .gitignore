@@ -6,6 +6,8 @@ packages/*/dist/
 /tmp/
 tmp.*/
 *.db
+.hermes-plugin/sandbox/
+.hermes-plugin/events.jsonl
 server.bundle.mjs
 cli.bundle.mjs
 package-lock.json

@@ -262,7 +262,6 @@ def pre_tool_call(*, tool_name: str, args: dict, task_id: str,
 
     # Block: inline HTTP in execute_code
     if tool_name == "terminal" and BLOCKED_INLINE_HTTP.search(stripped):
-        captures = BLOCKED_INLINE_HTTP.search(stripped)
         url_match = re.search(r"https?://[^\s\"'()]+", stripped)
         url = url_match.group(0) if url_match else ""
         return {
