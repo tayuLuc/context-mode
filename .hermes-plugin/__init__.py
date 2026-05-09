@@ -71,10 +71,12 @@ SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
 # ── Guidance block (injected once per session) ──────────────────────────
 
 GUIDANCE = (
-    "Before running a command, evaluate if its output will exceed ~3 KB. "
-    "If yes, use ctx_execute(language=\"shell\", code=\"...\") instead of terminal. "
-    "For data analysis (filtering, counting, searching), use ctx_execute with Python/JavaScript. "
-    "fetch/curl/wget are blocked in shell — use ctx_execute or ctx_fetch_and_index instead."
+    "Context Mode MCP tools available via ctx_execute.\n"
+    "- High-output terminal commands (curl/wget/build) BLOCKED. Use ctx_execute instead.\n"
+    "- Tool outputs >3KB are sandboxed to files. Use read_file to see full output.\n"
+    "- Think in Code: write scripts, don't read raw data into context.\n"
+    "- Keep responses concise. No filler, pleasantries, or hedging.\n"
+    "- /clear and /compact preserve your knowledge base."
 )
 
 # ── Module-level state ─────────────────────────────────────────────────
