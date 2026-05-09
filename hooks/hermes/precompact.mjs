@@ -37,6 +37,6 @@ try {
   db.upsertResume(sessionId, snapshot, allEvents.length);
   db.incrementCompactCount(sessionId);
   db.close();
-} catch {
-  // Silent fallback
+} catch (err) {
+  console.error('[hermes/precompact] Error:', err);
 }

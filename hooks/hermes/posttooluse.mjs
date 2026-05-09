@@ -62,8 +62,8 @@ try {
   attributeAndInsertEvents(db, sessionId, events, input, projectDir, "PostToolUse", resolveProjectAttributions);
 
   db.close();
-} catch {
-  // Silent fallback — postToolUse must never block the session
+} catch (err) {
+  console.error('[hermes/posttooluse] Error:', err);
 }
 
 process.stdout.write(JSON.stringify({ additional_context: "" }) + "\n");
