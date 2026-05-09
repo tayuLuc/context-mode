@@ -23,6 +23,8 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Optional
 
+import shutil
+
 logger = logging.getLogger("hermes-context-mode")
 
 # ── Constants ────────────────────────────────────────────────────────────
@@ -395,8 +397,6 @@ async def _cmd_ctx_stats(raw_args: str) -> str:
 
 async def _cmd_ctx_doctor(raw_args: str) -> str:
     """Handler for /ctx-doctor — run diagnostics."""
-    import shutil as _su
-
     checks = []
     checks.append(f"{'✓' if PLUGIN_DIR.exists() else '✗'} Plugin dir: {PLUGIN_DIR}")
 
@@ -409,7 +409,7 @@ async def _cmd_ctx_doctor(raw_args: str) -> str:
     active = len(_session_stats)
     checks.append(f"✓ Active sessions tracked: {active}")
 
-    mcp_bin = _su.which("context-mode")
+    mcp_bin = shutil.which("context-mode")
     checks.append(f"{'✓' if mcp_bin else '✗'} MCP server binary found"
                   + (f" at {mcp_bin}" if mcp_bin else ""))
 
@@ -425,7 +425,6 @@ async def _cmd_ctx_purge(raw_args: str) -> str:
             "Run `/ctx-purge yes` to confirm."
         )
 
-    import shutil
     deleted = []
 
     if SANDBOX_DIR.exists():
