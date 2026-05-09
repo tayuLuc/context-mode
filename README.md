@@ -863,7 +863,8 @@ context-mode integrates with Hermes Agent as a native **MCP server + plugin hook
 1. Add context-mode MCP server:
 
    ```bash
-   hermes mcp add context-mode -- npx -y context-mode
+   # Requires: npm install -g context-mode
+   hermes mcp add context-mode --command context-mode
    ```
 
 2. Restart gateway:
