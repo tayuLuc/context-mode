@@ -208,15 +208,12 @@ def _update_session(session_id: str, **kw) -> None:
 # ── Helpers ────────────────────────────────────────────────────────────
 
 def _fire_hook(event: str, payload: dict) -> None:
-    """Forward event to context-mode SessionDB via CLI hook."""
+    """Append event to JSONL log for future context-mode hook integration."""
     try:
-        proc = subprocess.run(
-            ["context-mode", "hook", "hermes", event],
-            input=json.dumps(payload),
-            capture_output=True, text=True, timeout=10,
-        )
-        if proc.returncode != 0:
-            logger.debug("_fire_hook %s stderr: %s", event, proc.stderr[:200])
+        log_path = PLUGIN_DIR / "events.jsonl"
+        entry = {"event": event, "ts": datetime.now().isoformat(), **payload}
+        with open(log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
     except Exception as e:
         logger.debug("_fire_hook %s error: %s", event, e)
 
