@@ -32,7 +32,7 @@ logger = logging.getLogger("hermes-context-mode")
 PLUGIN_DIR = Path(__file__).parent.resolve()
 SANDBOX_DIR = PLUGIN_DIR / "sandbox"
 
-SANDBOX_THRESHOLD = 3 * 1024  # 3KB
+SANDBOX_THRESHOLD = 10 * 1024  # 10KB — was 3KB, too low
 
 # Commands that pass through without blocking
 ALLOWED_COMMANDS = [
@@ -64,8 +64,8 @@ BLOCKED_INLINE_HTTP = re.compile(
 NEVER_SANDBOX = {"write_file", "patch", "text_to_speech", "send_message", "vision_analyze"}
 
 # Tools eligible for sandboxing
-SANDBOX_TOOLS = {"terminal", "read_file", "browser_snapshot", "browser_console",
-                 "browser_vision", "web_extract", "web_search", "execute_code"}
+SANDBOX_TOOLS = {"terminal", "browser_snapshot", "browser_console",
+                 "browser_vision", "web_extract", "web_search"}
 
 # ── Guidance block (injected once per session — single source: upstream routing-block.mjs) ──
 
